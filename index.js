@@ -188,10 +188,11 @@ function normalizeDateInput(input) {
 const pendingAllFrom = new Set();
 const pendingAdd = new Set();
 const pendingRemove = new Set();
+const pendingStartGoal = new Set();
 
 const bot = new TelegramBot(token, { polling: true });
 
-bot.onText(/\/start(?:\s+(.+))?/, (msg, match) => {
+bot.onText(/\/start(?:@\w+)?(?:\s+(.+))?/, (msg, match) => {
   const userId = String(msg.from.id);
   const db = readDb();
   const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
@@ -201,10 +202,11 @@ bot.onText(/\/start(?:\s+(.+))?/, (msg, match) => {
   const goal = parsePositiveInt(arg);
 
   if (!goal) {
+    pendingStartGoal.add(userId);
     writeDb(db);
     bot.sendMessage(
       msg.chat.id,
-      "Привет! Введи цель на день командой:\n/start 100\n\nГде 100 - количество отжиманий за день.",
+      "Привет! Введи цель на день числом, например: 100\n\nИли командой: /start 100",
       getReplyKeyboard()
     );
     return;
@@ -213,6 +215,7 @@ bot.onText(/\/start(?:\s+(.+))?/, (msg, match) => {
   userState.goalPerDay = goal;
   userState.remainingToday = goal + Math.max(0, Number(userState.carryOver || 0));
   userState.currentDateKey = getDatePartsInTimezone(nowDateInTimezone()).dateKey;
+  pendingStartGoal.delete(userId);
   writeDb(db);
 
   bot.sendMessage(
@@ -222,7 +225,7 @@ bot.onText(/\/start(?:\s+(.+))?/, (msg, match) => {
   );
 });
 
-bot.onText(/\/add(?:\s+(.+))?/, (msg, match) => {
+bot.onText(/\/add(?:@\w+)?(?:\s+(.+))?/, (msg, match) => {
   const userId = String(msg.from.id);
   const db = readDb();
   const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
@@ -265,7 +268,7 @@ bot.onText(/\/add(?:\s+(.+))?/, (msg, match) => {
   );
 });
 
-bot.onText(/\/remove(?:\s+(.+))?/, (msg, match) => {
+bot.onText(/\/remove(?:@\w+)?(?:\s+(.+))?/, (msg, match) => {
   const userId = String(msg.from.id);
   const db = readDb();
   const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
@@ -313,7 +316,7 @@ bot.onText(/\/remove(?:\s+(.+))?/, (msg, match) => {
   );
 });
 
-bot.onText(/\/left/, (msg) => {
+bot.onText(/\/left(?:@\w+)?/, (msg) => {
   const userId = String(msg.from.id);
   const db = readDb();
   const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
@@ -332,7 +335,7 @@ bot.onText(/\/left/, (msg) => {
   );
 });
 
-bot.onText(/\/record/, (msg) => {
+bot.onText(/\/record(?:@\w+)?/, (msg) => {
   const userId = String(msg.from.id);
   const db = readDb();
   const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
@@ -346,7 +349,7 @@ bot.onText(/\/record/, (msg) => {
   );
 });
 
-bot.onText(/\/allfrom/, (msg) => {
+bot.onText(/\/allfrom(?:@\w+)?/, (msg) => {
   const userId = String(msg.from.id);
   const db = readDb();
   const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
@@ -373,6 +376,32 @@ bot.on("message", (msg) => {
 
   const userId = String(msg.from.id);
   const text = msg.text.trim();
+
+  if (pendingStartGoal.has(userId)) {
+    const goal = parsePositiveInt(text);
+    if (!goal) {
+      bot.sendMessage(msg.chat.id, "Нужно положительное целое число, например: 100");
+      return;
+    }
+
+    const db = readDb();
+    const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
+    rollDailyStateIfNeeded(userState, nowDateInTimezone());
+
+    userState.goalPerDay = goal;
+    userState.remainingToday = goal + Math.max(0, Number(userState.carryOver || 0));
+    userState.currentDateKey = getDatePartsInTimezone(nowDateInTimezone()).dateKey;
+
+    pendingStartGoal.delete(userId);
+    writeDb(db);
+
+    bot.sendMessage(
+      msg.chat.id,
+      `Цель установлена: ${goal} отжиманий в день.\nНа сегодня осталось: ${userState.remainingToday}.`,
+      getReplyKeyboard()
+    );
+    return;
+  }
 
   if (text === BUTTONS.add) {
     const db = readDb();
