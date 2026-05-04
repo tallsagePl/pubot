@@ -15,11 +15,11 @@ const DATA_DIR = path.join(__dirname, "data");
 const DATA_FILE = path.join(DATA_DIR, "users.json");
 const REMINDER_HOURS = new Set([13, 16, 19, 22]);
 const BUTTONS = {
-  add: "Добавить",
-  remove: "Убрать",
-  left: "Сколько осталось",
-  record: "Рекорд за день",
-  allFrom: "Всего за период",
+  add: "/add",
+  remove: "/remove",
+  left: "/left",
+  record: "/record",
+  allFrom: "/allfrom",
 };
 
 if (!fs.existsSync(DATA_DIR)) {
