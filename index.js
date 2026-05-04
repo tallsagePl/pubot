@@ -20,6 +20,7 @@ const BUTTONS = {
   left: "/left",
   record: "/record",
   allFrom: "/allfrom",
+  leaderboard: "/leaderboard",
 };
 
 if (!fs.existsSync(DATA_DIR)) {
@@ -27,7 +28,7 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 
 if (!fs.existsSync(DATA_FILE)) {
-  fs.writeFileSync(DATA_FILE, JSON.stringify({ users: {} }, null, 2), "utf-8");
+  fs.writeFileSync(DATA_FILE, JSON.stringify({ users: {}, chats: {} }, null, 2), "utf-8");
 }
 
 function nowDateInTimezone() {
@@ -63,7 +64,11 @@ function dateToTimestampAtStartOfDay(dateKey) {
 
 function readDb() {
   const raw = fs.readFileSync(DATA_FILE, "utf-8");
-  return JSON.parse(raw);
+  const db = JSON.parse(raw);
+  if (!db.chats) {
+    db.chats = {};
+  }
+  return db;
 }
 
 function writeDb(db) {
@@ -87,6 +92,49 @@ function ensureUser(db, userId, fallbackName = "Пользователь") {
     };
   }
   return db.users[userId];
+}
+
+function touchChatParticipant(db, msg) {
+  if (!msg.chat || !msg.from) {
+    return false;
+  }
+  const chatType = msg.chat.type;
+  if (chatType !== "group" && chatType !== "supergroup") {
+    return false;
+  }
+
+  const chatId = String(msg.chat.id);
+  const userId = String(msg.from.id);
+  const displayName =
+    [msg.from.first_name, msg.from.last_name].filter(Boolean).join(" ").trim() ||
+    msg.from.username ||
+    "Пользователь";
+
+  let changed = false;
+
+  if (!db.chats[chatId]) {
+    db.chats[chatId] = { userIds: [] };
+    changed = true;
+  }
+
+  const chatEntry = db.chats[chatId];
+  if (!Array.isArray(chatEntry.userIds)) {
+    chatEntry.userIds = [];
+    changed = true;
+  }
+
+  if (!chatEntry.userIds.includes(userId)) {
+    chatEntry.userIds.push(userId);
+    changed = true;
+  }
+
+  const userState = ensureUser(db, userId, displayName);
+  if (userState.profile.name !== displayName) {
+    userState.profile.name = displayName;
+    changed = true;
+  }
+
+  return changed;
 }
 
 function rollDailyStateIfNeeded(userState, now) {
@@ -126,7 +174,7 @@ function getReplyKeyboard() {
       keyboard: [
         [BUTTONS.add, BUTTONS.remove],
         [BUTTONS.left, BUTTONS.record],
-        [BUTTONS.allFrom],
+        [BUTTONS.allFrom, BUTTONS.leaderboard],
       ],
       resize_keyboard: true,
       persistent: true,
@@ -155,6 +203,89 @@ function formatDateForUser(dateKey) {
     return dateKey;
   }
   return new Date(ts).toLocaleDateString("ru-RU");
+}
+
+/** Календарный «вчера» в BOT_TIMEZONE (для рейтинга в полночь). */
+function getYesterdayDateKeyInBotTimezone(now) {
+  const ref = new Date(now.getTime() - 60 * 60 * 1000);
+  return getDatePartsInTimezone(ref).dateKey;
+}
+
+function buildChatDailyRatingText(db, chatId, dateKey) {
+  const entry = db.chats[chatId];
+  if (!entry || !Array.isArray(entry.userIds) || entry.userIds.length === 0) {
+    return null;
+  }
+
+  const rows = [];
+  for (const uid of entry.userIds) {
+    const st = db.users[uid];
+    if (!st) continue;
+    const done = Math.max(0, Number(st.dailyDone?.[dateKey] || 0));
+    const name = (st.profile && st.profile.name) || `id:${uid}`;
+    rows.push({ uid, name, done });
+  }
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  rows.sort((a, b) => {
+    if (b.done !== a.done) return b.done - a.done;
+    return a.name.localeCompare(b.name, "ru");
+  });
+
+  const dateLabel = formatDateForUser(dateKey);
+  const lines = [`Рейтинг за ${dateLabel} (по календарю ${botTimezone}):`];
+  const maxLines = 60;
+  let place = 1;
+  for (const r of rows) {
+    if (lines.length >= maxLines) {
+      lines.push("… (список обрезан, в чате много участников)");
+      break;
+    }
+    lines.push(`${place}. ${r.name} — ${r.done}`);
+    place += 1;
+  }
+  return lines.join("\n");
+}
+
+function buildChatTotalLeaderboardText(db, chatId) {
+  const entry = db.chats[chatId];
+  if (!entry || !Array.isArray(entry.userIds) || entry.userIds.length === 0) {
+    return null;
+  }
+
+  const rows = [];
+  for (const uid of entry.userIds) {
+    const st = db.users[uid];
+    if (!st) continue;
+    const total = Math.max(0, Number(st.totalDone || 0));
+    const name = (st.profile && st.profile.name) || `id:${uid}`;
+    rows.push({ uid, name, total });
+  }
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  rows.sort((a, b) => {
+    if (b.total !== a.total) return b.total - a.total;
+    return a.name.localeCompare(b.name, "ru");
+  });
+
+  const lines = ["Таблица лидеров (всего отжиманий за всё время):"];
+  const maxLines = 60;
+  let place = 1;
+  for (const r of rows) {
+    if (lines.length >= maxLines) {
+      lines.push("… (список обрезан, в чате много участников)");
+      break;
+    }
+    lines.push(`${place}. ${r.name} — ${r.total}`);
+    place += 1;
+  }
+  return lines.join("\n");
 }
 
 function sumFromDate(userState, fromDateKey) {
@@ -191,6 +322,32 @@ const pendingRemove = new Set();
 const pendingStartGoal = new Set();
 
 const bot = new TelegramBot(token, { polling: true });
+
+function replyTotalLeaderboard(msg) {
+  const chatType = msg.chat.type;
+  if (chatType !== "group" && chatType !== "supergroup") {
+    bot.sendMessage(
+      msg.chat.id,
+      "Таблица лидеров строится в групповом чате, где бот видит участников.",
+      getReplyKeyboard()
+    );
+    return;
+  }
+
+  const chatId = String(msg.chat.id);
+  const db = readDb();
+  const text = buildChatTotalLeaderboardText(db, chatId);
+  if (!text) {
+    bot.sendMessage(
+      msg.chat.id,
+      "Пока пусто: пусть участники напишут боту в этом чате (любое сообщение или команду), чтобы попасть в рейтинг.",
+      getReplyKeyboard()
+    );
+    return;
+  }
+
+  bot.sendMessage(msg.chat.id, text, getReplyKeyboard());
+}
 
 bot.onText(/\/start(?:@\w+)?(?:\s+(.+))?/, (msg, match) => {
   const userId = String(msg.from.id);
@@ -369,7 +526,16 @@ bot.onText(/\/allfrom(?:@\w+)?/, (msg) => {
   );
 });
 
+bot.onText(/\/leaderboard(?:@\w+)?/, (msg) => {
+  replyTotalLeaderboard(msg);
+});
+
 bot.on("message", (msg) => {
+  const dbTouch = readDb();
+  if (touchChatParticipant(dbTouch, msg)) {
+    writeDb(dbTouch);
+  }
+
   if (!msg.text || msg.text.startsWith("/")) {
     return;
   }
@@ -495,6 +661,11 @@ bot.on("message", (msg) => {
       "Введи дату, с которой считать (ДД.ММ.ГГГГ или ГГГГ-ММ-ДД), либо напиши: начало",
       getReplyKeyboard()
     );
+    return;
+  }
+
+  if (text === BUTTONS.leaderboard) {
+    replyTotalLeaderboard(msg);
     return;
   }
 
@@ -652,6 +823,19 @@ function processDailyRollAndReminders() {
         getReplyKeyboard()
       )
       .catch(() => null);
+  }
+
+  if (parts.hour === 0 && minute === "00") {
+    const yesterdayKey = getYesterdayDateKeyInBotTimezone(now);
+    for (const chatId of Object.keys(db.chats || {})) {
+      const ratingText = buildChatDailyRatingText(db, chatId, yesterdayKey);
+      if (!ratingText) {
+        continue;
+      }
+      bot
+        .sendMessage(Number(chatId), ratingText)
+        .catch(() => null);
+    }
   }
 
   if (changed) {
