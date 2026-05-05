@@ -429,6 +429,25 @@ function buildChatTotalLeaderboardText(db, chatId) {
   return lines.join("\n");
 }
 
+function getGroupBestDayRecord(db, chatId) {
+  const entry = db.chats[chatId];
+  if (!entry || !Array.isArray(entry.userIds) || entry.userIds.length === 0) {
+    return null;
+  }
+
+  let maxRecord = 0;
+  for (const uid of entry.userIds) {
+    const st = db.users[uid];
+    if (!st) continue;
+    const best = Math.max(0, Number(st.bestDay || 0));
+    if (best > maxRecord) {
+      maxRecord = best;
+    }
+  }
+
+  return maxRecord;
+}
+
 function sumFromDate(userState, fromDateKey) {
   return Object.entries(userState.dailyDone || {})
     .filter(([dateKey]) => dateKey >= fromDateKey)
@@ -675,9 +694,18 @@ bot.onText(/\/record(?:@\w+)?/, (msg) => {
   userState.bestDay = recalculateBestDay(userState.dailyDone);
   writeDb(db);
 
+  let groupRecordText = "Рекорд в группе: доступно в групповом чате.";
+  const chatType = msg.chat.type;
+  if (chatType === "group" || chatType === "supergroup") {
+    const chatId = String(msg.chat.id);
+    const groupRecord = getGroupBestDayRecord(db, chatId);
+    const normalizedGroupRecord = groupRecord === null ? 0 : groupRecord;
+    groupRecordText = `Рекорд в группе: ${normalizedGroupRecord} отжиманий.`;
+  }
+
   bot.sendMessage(
     msg.chat.id,
-    `Рекорд за день: ${userState.bestDay || 0} отжиманий.`,
+    `Личный рекорд: ${userState.bestDay || 0} отжиманий.\n${groupRecordText}`,
     getReplyKeyboard()
   );
 });
@@ -817,9 +845,18 @@ bot.on("message", (msg) => {
     userState.bestDay = recalculateBestDay(userState.dailyDone);
     writeDb(db);
 
+    let groupRecordText = "Рекорд в группе: доступно в групповом чате.";
+    const chatType = msg.chat.type;
+    if (chatType === "group" || chatType === "supergroup") {
+      const chatId = String(msg.chat.id);
+      const groupRecord = getGroupBestDayRecord(db, chatId);
+      const normalizedGroupRecord = groupRecord === null ? 0 : groupRecord;
+      groupRecordText = `Рекорд в группе: ${normalizedGroupRecord} отжиманий.`;
+    }
+
     bot.sendMessage(
       msg.chat.id,
-      `Рекорд за день: ${userState.bestDay || 0} отжиманий.`,
+      `Личный рекорд: ${userState.bestDay || 0} отжиманий.\n${groupRecordText}`,
       getReplyKeyboard()
     );
     return;
