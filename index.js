@@ -436,16 +436,25 @@ function getGroupBestDayRecord(db, chatId) {
   }
 
   let maxRecord = 0;
+  let ownerName = null;
   for (const uid of entry.userIds) {
     const st = db.users[uid];
     if (!st) continue;
     const best = Math.max(0, Number(st.bestDay || 0));
     if (best > maxRecord) {
       maxRecord = best;
+      ownerName = (st.profile && st.profile.name) || `id:${uid}`;
     }
   }
 
-  return maxRecord;
+  if (!ownerName) {
+    return null;
+  }
+
+  return {
+    value: maxRecord,
+    ownerName,
+  };
 }
 
 function sumFromDate(userState, fromDateKey) {
@@ -699,8 +708,11 @@ bot.onText(/\/record(?:@\w+)?/, (msg) => {
   if (chatType === "group" || chatType === "supergroup") {
     const chatId = String(msg.chat.id);
     const groupRecord = getGroupBestDayRecord(db, chatId);
-    const normalizedGroupRecord = groupRecord === null ? 0 : groupRecord;
-    groupRecordText = `Рекорд в группе: ${normalizedGroupRecord} отжиманий.`;
+    if (!groupRecord) {
+      groupRecordText = "Рекорд в группе: 0 отжиманий - пока нет владельца рекорда.";
+    } else {
+      groupRecordText = `Рекорд в группе: ${groupRecord.value} отжиманий - ${groupRecord.ownerName}.`;
+    }
   }
 
   bot.sendMessage(
@@ -850,8 +862,11 @@ bot.on("message", (msg) => {
     if (chatType === "group" || chatType === "supergroup") {
       const chatId = String(msg.chat.id);
       const groupRecord = getGroupBestDayRecord(db, chatId);
-      const normalizedGroupRecord = groupRecord === null ? 0 : groupRecord;
-      groupRecordText = `Рекорд в группе: ${normalizedGroupRecord} отжиманий.`;
+      if (!groupRecord) {
+        groupRecordText = "Рекорд в группе: 0 отжиманий - пока нет владельца рекорда.";
+      } else {
+        groupRecordText = `Рекорд в группе: ${groupRecord.value} отжиманий - ${groupRecord.ownerName}.`;
+      }
     }
 
     bot.sendMessage(
