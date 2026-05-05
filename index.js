@@ -80,6 +80,29 @@ function shiftDateKey(dateKey, daysDelta) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
+function getDateKeyDiffInDays(fromDateKey, toDateKey) {
+  const [fromYear, fromMonth, fromDay] = (fromDateKey || "").split("-").map(Number);
+  const [toYear, toMonth, toDay] = (toDateKey || "").split("-").map(Number);
+  if (
+    !Number.isInteger(fromYear) ||
+    !Number.isInteger(fromMonth) ||
+    !Number.isInteger(fromDay) ||
+    !Number.isInteger(toYear) ||
+    !Number.isInteger(toMonth) ||
+    !Number.isInteger(toDay)
+  ) {
+    return 1;
+  }
+  const fromTs = Date.UTC(fromYear, fromMonth - 1, fromDay);
+  const toTs = Date.UTC(toYear, toMonth - 1, toDay);
+  if (!Number.isFinite(fromTs) || !Number.isFinite(toTs)) {
+    return 1;
+  }
+  const dayMs = 24 * 60 * 60 * 1000;
+  const diff = Math.floor((toTs - fromTs) / dayMs);
+  return diff;
+}
+
 function getActiveDayKey(now) {
   const parts = getDatePartsInTimezone(now);
   if (parts.hour >= RESET_HOUR) {
@@ -216,8 +239,10 @@ function syncUserToActiveDay(userState, activeDayKey) {
 
   const previousRemaining = Math.max(0, Number(userState.remainingToday || 0));
   const goal = Number(userState.goalPerDay || 0);
-  userState.carryOver = previousRemaining;
-  userState.remainingToday = Math.max(0, goal) + userState.carryOver;
+  const daysPassed = Math.max(1, getDateKeyDiffInDays(userState.currentDateKey, activeDayKey));
+  const normalizedGoal = Math.max(0, goal);
+  userState.carryOver = previousRemaining + normalizedGoal * (daysPassed - 1);
+  userState.remainingToday = previousRemaining + normalizedGoal * daysPassed;
   userState.currentDateKey = activeDayKey;
   return true;
 }
@@ -435,24 +460,52 @@ function getGroupBestDayRecord(db, chatId) {
     return null;
   }
 
-  let maxRecord = 0;
-  let ownerName = null;
+  let candidateMax = 0;
+  let candidateOwnerId = null;
   for (const uid of entry.userIds) {
     const st = db.users[uid];
     if (!st) continue;
     const best = Math.max(0, Number(st.bestDay || 0));
-    if (best > maxRecord) {
-      maxRecord = best;
-      ownerName = (st.profile && st.profile.name) || `id:${uid}`;
+    if (best > candidateMax) {
+      candidateMax = best;
+      candidateOwnerId = uid;
     }
   }
 
-  if (!ownerName) {
+  const existing = entry.groupBestDayRecord;
+  const hasExisting =
+    existing &&
+    Number.isInteger(Number(existing.value)) &&
+    Number(existing.value) >= 0 &&
+    existing.ownerId;
+
+  if (!hasExisting) {
+    if (!candidateOwnerId || candidateMax <= 0) {
+      return null;
+    }
+    entry.groupBestDayRecord = {
+      value: candidateMax,
+      ownerId: candidateOwnerId,
+    };
+  } else if (candidateMax > Number(existing.value || 0) && candidateOwnerId) {
+    // Владелец рекорда меняется только если новый результат строго больше.
+    entry.groupBestDayRecord = {
+      value: candidateMax,
+      ownerId: candidateOwnerId,
+    };
+  }
+
+  const record = entry.groupBestDayRecord;
+  if (!record || !record.ownerId) {
     return null;
   }
 
+  const ownerState = db.users[record.ownerId];
+  const ownerName =
+    (ownerState && ownerState.profile && ownerState.profile.name) || `id:${record.ownerId}`;
+
   return {
-    value: maxRecord,
+    value: Number(record.value || 0),
     ownerName,
   };
 }
@@ -701,7 +754,6 @@ bot.onText(/\/record(?:@\w+)?/, (msg) => {
   const { activeDayKey } = ensureGlobalDayState(db, now);
   syncUserToActiveDay(userState, activeDayKey);
   userState.bestDay = recalculateBestDay(userState.dailyDone);
-  writeDb(db);
 
   let groupRecordText = "Рекорд в группе: доступно в групповом чате.";
   const chatType = msg.chat.type;
@@ -714,6 +766,7 @@ bot.onText(/\/record(?:@\w+)?/, (msg) => {
       groupRecordText = `Рекорд в группе: ${groupRecord.value} отжиманий - ${groupRecord.ownerName}.`;
     }
   }
+  writeDb(db);
 
   bot.sendMessage(
     msg.chat.id,
@@ -855,7 +908,6 @@ bot.on("message", (msg) => {
     const { activeDayKey } = ensureGlobalDayState(db, now);
     syncUserToActiveDay(userState, activeDayKey);
     userState.bestDay = recalculateBestDay(userState.dailyDone);
-    writeDb(db);
 
     let groupRecordText = "Рекорд в группе: доступно в групповом чате.";
     const chatType = msg.chat.type;
@@ -868,6 +920,7 @@ bot.on("message", (msg) => {
         groupRecordText = `Рекорд в группе: ${groupRecord.value} отжиманий - ${groupRecord.ownerName}.`;
       }
     }
+    writeDb(db);
 
     bot.sendMessage(
       msg.chat.id,
