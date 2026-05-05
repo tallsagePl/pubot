@@ -18,6 +18,7 @@ const REMINDER_HOURS = new Set([13, 16, 19, 22]);
 const RESET_HOUR = 4;
 const NEW_DAY_DEFAULT_GOAL = Number(process.env.NEW_DAY_DEFAULT_GOAL || 100);
 const FORCE_NEW_DAY_ON_START = process.argv.includes("--newday");
+const CLEAR_LEADERBOARD_ON_START = process.argv.includes("--clearleader");
 const BUTTONS = {
   add: "/add",
   remove: "/remove",
@@ -275,6 +276,14 @@ function forceNewDayReset(db, now, baseGoal) {
   writeDayState(dayState);
 }
 
+function clearLeaderboardAndRecords(db) {
+  for (const userState of Object.values(db.users || {})) {
+    userState.bestDay = 0;
+    userState.dailyDone = {};
+    userState.totalDone = 0;
+  }
+}
+
 function getReplyKeyboard() {
   return {
     reply_markup: {
@@ -302,6 +311,12 @@ function recalculateBestDay(dailyDone) {
     (max, val) => Math.max(max, Number(val || 0)),
     0
   );
+}
+
+function getTodayTargetTotal(userState) {
+  const goal = Math.max(0, Number(userState.goalPerDay || 0));
+  const carry = Math.max(0, Number(userState.carryOver || 0));
+  return goal + carry;
 }
 
 function formatDateForUser(dateKey) {
@@ -575,7 +590,11 @@ bot.onText(/\/remove(?:@\w+)?(?:\s+(.+))?/, (msg, match) => {
   const removeValue = Math.min(value, todayDone);
   userState.dailyDone[dateKey] = todayDone - removeValue;
   userState.totalDone = Math.max(0, Number(userState.totalDone || 0) - removeValue);
-  userState.remainingToday = Math.max(0, Number(userState.remainingToday || 0) + removeValue);
+  const todayTarget = getTodayTargetTotal(userState);
+  userState.remainingToday = Math.min(
+    todayTarget,
+    Math.max(0, Number(userState.remainingToday || 0) + removeValue)
+  );
   userState.bestDay = recalculateBestDay(userState.dailyDone);
 
   writeDb(db);
@@ -614,6 +633,7 @@ bot.onText(/\/record(?:@\w+)?/, (msg) => {
   const now = nowDateInTimezone();
   const { activeDayKey } = ensureGlobalDayState(db, now);
   syncUserToActiveDay(userState, activeDayKey);
+  userState.bestDay = recalculateBestDay(userState.dailyDone);
   writeDb(db);
 
   bot.sendMessage(
@@ -763,6 +783,7 @@ bot.on("message", (msg) => {
     const now = nowDateInTimezone();
     const { activeDayKey } = ensureGlobalDayState(db, now);
     syncUserToActiveDay(userState, activeDayKey);
+    userState.bestDay = recalculateBestDay(userState.dailyDone);
     writeDb(db);
 
     bot.sendMessage(
@@ -869,7 +890,11 @@ bot.on("message", (msg) => {
     const removeValue = Math.min(value, todayDone);
     userState.dailyDone[dateKey] = todayDone - removeValue;
     userState.totalDone = Math.max(0, Number(userState.totalDone || 0) - removeValue);
-    userState.remainingToday = Math.max(0, Number(userState.remainingToday || 0) + removeValue);
+    const todayTarget = getTodayTargetTotal(userState);
+    userState.remainingToday = Math.min(
+      todayTarget,
+      Math.max(0, Number(userState.remainingToday || 0) + removeValue)
+    );
     userState.bestDay = recalculateBestDay(userState.dailyDone);
 
     pendingRemove.delete(userId);
@@ -986,6 +1011,13 @@ function processDailyRollAndReminders() {
 }
 
 setInterval(processDailyRollAndReminders, 30 * 1000);
+if (CLEAR_LEADERBOARD_ON_START) {
+  const db = readDb();
+  clearLeaderboardAndRecords(db);
+  writeDb(db);
+  console.log("Leaderboard and records have been cleared.");
+  process.exit(0);
+}
 if (FORCE_NEW_DAY_ON_START) {
   const db = readDb();
   forceNewDayReset(db, nowDateInTimezone(), NEW_DAY_DEFAULT_GOAL);

@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "newday": "node index.js --newday",
+    "clearleader": "node index.js --clearleader",
     "test": "echo \"No tests configured\""
   },
   "keywords": [],
