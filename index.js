@@ -298,6 +298,25 @@ function getReplyKeyboard() {
   };
 }
 
+function getAmountInlineKeyboard(mode) {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: "5", callback_data: `amount:${mode}:5` },
+          { text: "10", callback_data: `amount:${mode}:10` },
+          { text: "15", callback_data: `amount:${mode}:15` },
+        ],
+        [
+          { text: "20", callback_data: `amount:${mode}:20` },
+          { text: "25", callback_data: `amount:${mode}:25` },
+          { text: "30", callback_data: `amount:${mode}:30` },
+        ],
+      ],
+    },
+  };
+}
+
 function parsePositiveInt(value) {
   const n = Number(value);
   if (!Number.isInteger(n) || n <= 0) {
@@ -442,8 +461,36 @@ const pendingAllFrom = new Set();
 const pendingAdd = new Set();
 const pendingRemove = new Set();
 const pendingStartGoal = new Set();
+const pendingAmountPrompt = new Map();
 
 const bot = new TelegramBot(token, { polling: true });
+
+function clearPendingAmountPrompt(userId) {
+  const prompt = pendingAmountPrompt.get(userId);
+  if (!prompt) {
+    return;
+  }
+  pendingAmountPrompt.delete(userId);
+  bot
+    .editMessageReplyMarkup(
+      { inline_keyboard: [] },
+      {
+        chat_id: prompt.chatId,
+        message_id: prompt.messageId,
+      }
+    )
+    .catch(() => null);
+}
+
+function sendAmountPrompt(chatId, userId, mode) {
+  clearPendingAmountPrompt(userId);
+  return bot
+    .sendMessage(chatId, "Выбери число или напиши свое", getAmountInlineKeyboard(mode))
+    .then((sentMsg) => {
+      pendingAmountPrompt.set(userId, { chatId, messageId: sentMsg.message_id });
+      return sentMsg;
+    });
+}
 
 function replyTotalLeaderboard(msg) {
   const chatType = msg.chat.type;
@@ -526,11 +573,7 @@ bot.onText(/\/add(?:@\w+)?(?:\s+(.+))?/, (msg, match) => {
   if (!value) {
     pendingAdd.add(userId);
     writeDb(db);
-    bot.sendMessage(
-      msg.chat.id,
-      "Напиши количество отжиманий числом, например: 25",
-      getReplyKeyboard()
-    );
+    sendAmountPrompt(msg.chat.id, userId, "add");
     return;
   }
 
@@ -573,11 +616,7 @@ bot.onText(/\/remove(?:@\w+)?(?:\s+(.+))?/, (msg, match) => {
   if (!value) {
     pendingRemove.add(userId);
     writeDb(db);
-    bot.sendMessage(
-      msg.chat.id,
-      "Напиши, сколько отжиманий убрать за сегодня (ошибка ввода), например: 10",
-      getReplyKeyboard()
-    );
+    sendAmountPrompt(msg.chat.id, userId, "remove");
     return;
   }
 
@@ -725,11 +764,7 @@ bot.on("message", (msg) => {
 
     pendingAdd.add(userId);
     writeDb(db);
-    bot.sendMessage(
-      msg.chat.id,
-      "Напиши количество отжиманий числом, например: 25",
-      getReplyKeyboard()
-    );
+    sendAmountPrompt(msg.chat.id, userId, "add");
     return;
   }
 
@@ -748,11 +783,7 @@ bot.on("message", (msg) => {
 
     pendingRemove.add(userId);
     writeDb(db);
-    bot.sendMessage(
-      msg.chat.id,
-      "Напиши, сколько отжиманий убрать за сегодня (ошибка ввода), например: 10",
-      getReplyKeyboard()
-    );
+    sendAmountPrompt(msg.chat.id, userId, "remove");
     return;
   }
 
@@ -822,6 +853,7 @@ bot.on("message", (msg) => {
   }
 
   if (pendingAdd.has(userId)) {
+    clearPendingAmountPrompt(userId);
     const value = parsePositiveInt(text);
     if (!value) {
       bot.sendMessage(msg.chat.id, "Нужно положительное целое число. Попробуй еще раз.");
@@ -860,6 +892,7 @@ bot.on("message", (msg) => {
   }
 
   if (pendingRemove.has(userId)) {
+    clearPendingAmountPrompt(userId);
     const value = parsePositiveInt(text);
     if (!value) {
       bot.sendMessage(msg.chat.id, "Нужно положительное целое число. Попробуй еще раз.");
@@ -945,6 +978,90 @@ bot.on("message", (msg) => {
       `С ${formatDateForUser(normalized.dateKey)} выполнено: ${sum} отжиманий.`,
       getReplyKeyboard()
     );
+  }
+});
+
+bot.on("callback_query", (query) => {
+  const data = query.data || "";
+  const match = data.match(/^amount:(add|remove):(\d+)$/);
+  if (!match || !query.from || !query.message) {
+    if (query.id) {
+      bot.answerCallbackQuery(query.id).catch(() => null);
+    }
+    return;
+  }
+
+  const [, mode, amountText] = match;
+  const value = parsePositiveInt(amountText);
+  const userId = String(query.from.id);
+  const chatId = query.message.chat.id;
+
+  clearPendingAmountPrompt(userId);
+
+  if (!value) {
+    if (query.id) {
+      bot.answerCallbackQuery(query.id, { text: "Некорректное число", show_alert: false }).catch(() => null);
+    }
+    return;
+  }
+
+  const db = readDb();
+  const userState = ensureUser(db, userId, query.from.first_name || "Пользователь");
+  const now = nowDateInTimezone();
+  const { activeDayKey } = ensureGlobalDayState(db, now);
+  syncUserToActiveDay(userState, activeDayKey);
+
+  if (!userState.goalPerDay) {
+    pendingAdd.delete(userId);
+    pendingRemove.delete(userId);
+    writeDb(db);
+    bot.sendMessage(chatId, "Сначала задай цель через /start 100", getReplyKeyboard());
+    if (query.id) {
+      bot.answerCallbackQuery(query.id).catch(() => null);
+    }
+    return;
+  }
+
+  if (mode === "add") {
+    const dateKey = activeDayKey;
+    userState.dailyDone[dateKey] = Number(userState.dailyDone[dateKey] || 0) + value;
+    userState.totalDone += value;
+    userState.remainingToday = Math.max(0, Number(userState.remainingToday || 0) - value);
+    if (userState.dailyDone[dateKey] > userState.bestDay) {
+      userState.bestDay = userState.dailyDone[dateKey];
+    }
+    pendingAdd.delete(userId);
+    writeDb(db);
+    bot.sendMessage(chatId, `Добавил ${value}. Осталось на сегодня: ${userState.remainingToday}.`, getReplyKeyboard());
+  } else {
+    const dateKey = activeDayKey;
+    const todayDone = Number(userState.dailyDone[dateKey] || 0);
+    if (todayDone <= 0) {
+      pendingRemove.delete(userId);
+      writeDb(db);
+      bot.sendMessage(chatId, "За сегодня пока нечего убирать.", getReplyKeyboard());
+      if (query.id) {
+        bot.answerCallbackQuery(query.id).catch(() => null);
+      }
+      return;
+    }
+
+    const removeValue = Math.min(value, todayDone);
+    userState.dailyDone[dateKey] = todayDone - removeValue;
+    userState.totalDone = Math.max(0, Number(userState.totalDone || 0) - removeValue);
+    const todayTarget = getTodayTargetTotal(userState);
+    userState.remainingToday = Math.min(
+      todayTarget,
+      Math.max(0, Number(userState.remainingToday || 0) + removeValue)
+    );
+    userState.bestDay = recalculateBestDay(userState.dailyDone);
+    pendingRemove.delete(userId);
+    writeDb(db);
+    bot.sendMessage(chatId, `Убрал ${removeValue}. Осталось на сегодня: ${userState.remainingToday}.`, getReplyKeyboard());
+  }
+
+  if (query.id) {
+    bot.answerCallbackQuery(query.id).catch(() => null);
   }
 });
 
