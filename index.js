@@ -13,7 +13,11 @@ if (!token) {
 
 const DATA_DIR = path.join(__dirname, "data");
 const DATA_FILE = path.join(DATA_DIR, "users.json");
+const DAY_STATE_FILE = path.join(DATA_DIR, "day-state.json");
 const REMINDER_HOURS = new Set([13, 16, 19, 22]);
+const RESET_HOUR = 4;
+const NEW_DAY_DEFAULT_GOAL = Number(process.env.NEW_DAY_DEFAULT_GOAL || 100);
+const FORCE_NEW_DAY_ON_START = process.argv.includes("--newday");
 const BUTTONS = {
   add: "/add",
   remove: "/remove",
@@ -29,6 +33,10 @@ if (!fs.existsSync(DATA_DIR)) {
 
 if (!fs.existsSync(DATA_FILE)) {
   fs.writeFileSync(DATA_FILE, JSON.stringify({ users: {}, chats: {} }, null, 2), "utf-8");
+}
+
+if (!fs.existsSync(DAY_STATE_FILE)) {
+  fs.writeFileSync(DAY_STATE_FILE, JSON.stringify({ activeDayKey: null, updatedAt: null }, null, 2), "utf-8");
 }
 
 function nowDateInTimezone() {
@@ -62,9 +70,29 @@ function dateToTimestampAtStartOfDay(dateKey) {
   return new Date(`${dateKey}T00:00:00`).getTime();
 }
 
+function shiftDateKey(dateKey, daysDelta) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const utcDate = new Date(Date.UTC(year, month - 1, day + daysDelta));
+  const yyyy = utcDate.getUTCFullYear();
+  const mm = String(utcDate.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(utcDate.getUTCDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function getActiveDayKey(now) {
+  const parts = getDatePartsInTimezone(now);
+  if (parts.hour >= RESET_HOUR) {
+    return parts.dateKey;
+  }
+  return shiftDateKey(parts.dateKey, -1);
+}
+
 function readDb() {
   const raw = fs.readFileSync(DATA_FILE, "utf-8");
   const db = JSON.parse(raw);
+  if (!db.users || typeof db.users !== "object") {
+    db.users = {};
+  }
   if (!db.chats) {
     db.chats = {};
   }
@@ -73,6 +101,29 @@ function readDb() {
 
 function writeDb(db) {
   fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2), "utf-8");
+}
+
+function readDayState() {
+  let dayState = { activeDayKey: null, updatedAt: null };
+  try {
+    const raw = fs.readFileSync(DAY_STATE_FILE, "utf-8");
+    dayState = JSON.parse(raw);
+  } catch {
+    // Восстанавливаем файл состояния дня при битом JSON.
+    writeDayState(dayState);
+    return dayState;
+  }
+  if (!Object.prototype.hasOwnProperty.call(dayState, "activeDayKey")) {
+    dayState.activeDayKey = null;
+  }
+  if (!Object.prototype.hasOwnProperty.call(dayState, "updatedAt")) {
+    dayState.updatedAt = null;
+  }
+  return dayState;
+}
+
+function writeDayState(dayState) {
+  fs.writeFileSync(DAY_STATE_FILE, JSON.stringify(dayState, null, 2), "utf-8");
 }
 
 function ensureUser(db, userId, fallbackName = "Пользователь") {
@@ -137,35 +188,91 @@ function touchChatParticipant(db, msg) {
   return changed;
 }
 
-function rollDailyStateIfNeeded(userState, now) {
-  const { dateKey, hour } = getDatePartsInTimezone(now);
+function ensureUserDailyFields(userState) {
+  if (typeof userState.remainingToday !== "number") {
+    userState.remainingToday = 0;
+  }
+  if (typeof userState.carryOver !== "number") {
+    userState.carryOver = 0;
+  }
+}
+
+function syncUserToActiveDay(userState, activeDayKey) {
+  ensureUserDailyFields(userState);
   if (!userState.currentDateKey) {
-    userState.currentDateKey = dateKey;
-    if (typeof userState.remainingToday !== "number") {
-      userState.remainingToday = 0;
+    const goal = Number(userState.goalPerDay || 0);
+    const carry = Math.max(0, Number(userState.carryOver || 0));
+    const bootstrappedRemaining = Math.max(0, goal) + carry;
+    if (Number(userState.remainingToday || 0) !== bootstrappedRemaining) {
+      userState.remainingToday = bootstrappedRemaining;
     }
-    return;
+    userState.currentDateKey = activeDayKey;
+    return true;
   }
-
-  if (userState.currentDateKey === dateKey) {
-    return;
-  }
-
-  const crossedResetBoundary = hour >= 4;
-  if (!crossedResetBoundary) {
-    return;
+  if (userState.currentDateKey === activeDayKey) {
+    return false;
   }
 
   const previousRemaining = Math.max(0, Number(userState.remainingToday || 0));
+  const goal = Number(userState.goalPerDay || 0);
   userState.carryOver = previousRemaining;
+  userState.remainingToday = Math.max(0, goal) + userState.carryOver;
+  userState.currentDateKey = activeDayKey;
+  return true;
+}
 
-  if (typeof userState.goalPerDay === "number" && userState.goalPerDay > 0) {
-    userState.remainingToday = userState.goalPerDay + userState.carryOver;
+function rollAllUsersToDay(db, activeDayKey) {
+  let changed = false;
+  for (const userState of Object.values(db.users || {})) {
+    if (syncUserToActiveDay(userState, activeDayKey)) {
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function ensureGlobalDayState(db, now) {
+  const dayState = readDayState();
+  const activeDayKey = getActiveDayKey(now);
+  let usersChanged = false;
+  let dayStateChanged = false;
+
+  if (!dayState.activeDayKey) {
+    dayState.activeDayKey = activeDayKey;
+    usersChanged = rollAllUsersToDay(db, activeDayKey);
+    dayStateChanged = true;
+  } else if (dayState.activeDayKey !== activeDayKey) {
+    dayState.activeDayKey = activeDayKey;
+    usersChanged = rollAllUsersToDay(db, activeDayKey);
+    dayStateChanged = true;
   } else {
-    userState.remainingToday = userState.carryOver;
+    usersChanged = rollAllUsersToDay(db, activeDayKey);
   }
 
-  userState.currentDateKey = dateKey;
+  if (dayStateChanged) {
+    dayState.updatedAt = Date.now();
+    writeDayState(dayState);
+  }
+
+  return { activeDayKey, usersChanged, dayStateChanged };
+}
+
+function forceNewDayReset(db, now, baseGoal) {
+  const dayState = readDayState();
+  const activeDayKey = getActiveDayKey(now);
+  const normalizedBaseGoal = Number.isInteger(baseGoal) && baseGoal > 0 ? baseGoal : 100;
+
+  for (const userState of Object.values(db.users || {})) {
+    const goal = Number(userState.goalPerDay || 0);
+    const effectiveGoal = goal > 0 ? goal : normalizedBaseGoal;
+    userState.carryOver = 0;
+    userState.remainingToday = effectiveGoal;
+    userState.currentDateKey = activeDayKey;
+  }
+
+  dayState.activeDayKey = activeDayKey;
+  dayState.updatedAt = Date.now();
+  writeDayState(dayState);
 }
 
 function getReplyKeyboard() {
@@ -353,7 +460,9 @@ bot.onText(/\/start(?:@\w+)?(?:\s+(.+))?/, (msg, match) => {
   const userId = String(msg.from.id);
   const db = readDb();
   const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
-  rollDailyStateIfNeeded(userState, nowDateInTimezone());
+  const now = nowDateInTimezone();
+  const { activeDayKey } = ensureGlobalDayState(db, now);
+  syncUserToActiveDay(userState, activeDayKey);
 
   const arg = match && match[1] ? match[1].trim() : "";
   const goal = parsePositiveInt(arg);
@@ -371,7 +480,7 @@ bot.onText(/\/start(?:@\w+)?(?:\s+(.+))?/, (msg, match) => {
 
   userState.goalPerDay = goal;
   userState.remainingToday = goal + Math.max(0, Number(userState.carryOver || 0));
-  userState.currentDateKey = getDatePartsInTimezone(nowDateInTimezone()).dateKey;
+  userState.currentDateKey = activeDayKey;
   pendingStartGoal.delete(userId);
   writeDb(db);
 
@@ -386,7 +495,9 @@ bot.onText(/\/add(?:@\w+)?(?:\s+(.+))?/, (msg, match) => {
   const userId = String(msg.from.id);
   const db = readDb();
   const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
-  rollDailyStateIfNeeded(userState, nowDateInTimezone());
+  const now = nowDateInTimezone();
+  const { activeDayKey } = ensureGlobalDayState(db, now);
+  syncUserToActiveDay(userState, activeDayKey);
 
   if (!userState.goalPerDay) {
     writeDb(db);
@@ -408,7 +519,7 @@ bot.onText(/\/add(?:@\w+)?(?:\s+(.+))?/, (msg, match) => {
     return;
   }
 
-  const dateKey = getDatePartsInTimezone(nowDateInTimezone()).dateKey;
+  const dateKey = activeDayKey;
   userState.dailyDone[dateKey] = Number(userState.dailyDone[dateKey] || 0) + value;
   userState.totalDone += value;
   userState.remainingToday = Math.max(0, Number(userState.remainingToday || 0) - value);
@@ -429,7 +540,9 @@ bot.onText(/\/remove(?:@\w+)?(?:\s+(.+))?/, (msg, match) => {
   const userId = String(msg.from.id);
   const db = readDb();
   const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
-  rollDailyStateIfNeeded(userState, nowDateInTimezone());
+  const now = nowDateInTimezone();
+  const { activeDayKey } = ensureGlobalDayState(db, now);
+  syncUserToActiveDay(userState, activeDayKey);
 
   if (!userState.goalPerDay) {
     writeDb(db);
@@ -439,7 +552,7 @@ bot.onText(/\/remove(?:@\w+)?(?:\s+(.+))?/, (msg, match) => {
 
   const arg = match && match[1] ? match[1].trim() : "";
   const value = parsePositiveInt(arg);
-  const dateKey = getDatePartsInTimezone(nowDateInTimezone()).dateKey;
+  const dateKey = activeDayKey;
   const todayDone = Number(userState.dailyDone[dateKey] || 0);
 
   if (!value) {
@@ -477,7 +590,9 @@ bot.onText(/\/left(?:@\w+)?/, (msg) => {
   const userId = String(msg.from.id);
   const db = readDb();
   const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
-  rollDailyStateIfNeeded(userState, nowDateInTimezone());
+  const now = nowDateInTimezone();
+  const { activeDayKey } = ensureGlobalDayState(db, now);
+  syncUserToActiveDay(userState, activeDayKey);
   writeDb(db);
 
   if (!userState.goalPerDay) {
@@ -496,7 +611,9 @@ bot.onText(/\/record(?:@\w+)?/, (msg) => {
   const userId = String(msg.from.id);
   const db = readDb();
   const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
-  rollDailyStateIfNeeded(userState, nowDateInTimezone());
+  const now = nowDateInTimezone();
+  const { activeDayKey } = ensureGlobalDayState(db, now);
+  syncUserToActiveDay(userState, activeDayKey);
   writeDb(db);
 
   bot.sendMessage(
@@ -510,7 +627,9 @@ bot.onText(/\/allfrom(?:@\w+)?/, (msg) => {
   const userId = String(msg.from.id);
   const db = readDb();
   const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
-  rollDailyStateIfNeeded(userState, nowDateInTimezone());
+  const now = nowDateInTimezone();
+  const { activeDayKey } = ensureGlobalDayState(db, now);
+  syncUserToActiveDay(userState, activeDayKey);
   writeDb(db);
 
   if (!userState.goalPerDay) {
@@ -552,11 +671,13 @@ bot.on("message", (msg) => {
 
     const db = readDb();
     const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
-    rollDailyStateIfNeeded(userState, nowDateInTimezone());
+    const now = nowDateInTimezone();
+    const { activeDayKey } = ensureGlobalDayState(db, now);
+    syncUserToActiveDay(userState, activeDayKey);
 
     userState.goalPerDay = goal;
     userState.remainingToday = goal + Math.max(0, Number(userState.carryOver || 0));
-    userState.currentDateKey = getDatePartsInTimezone(nowDateInTimezone()).dateKey;
+    userState.currentDateKey = activeDayKey;
 
     pendingStartGoal.delete(userId);
     writeDb(db);
@@ -572,7 +693,9 @@ bot.on("message", (msg) => {
   if (text === BUTTONS.add) {
     const db = readDb();
     const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
-    rollDailyStateIfNeeded(userState, nowDateInTimezone());
+    const now = nowDateInTimezone();
+    const { activeDayKey } = ensureGlobalDayState(db, now);
+    syncUserToActiveDay(userState, activeDayKey);
 
     if (!userState.goalPerDay) {
       writeDb(db);
@@ -593,7 +716,9 @@ bot.on("message", (msg) => {
   if (text === BUTTONS.remove) {
     const db = readDb();
     const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
-    rollDailyStateIfNeeded(userState, nowDateInTimezone());
+    const now = nowDateInTimezone();
+    const { activeDayKey } = ensureGlobalDayState(db, now);
+    syncUserToActiveDay(userState, activeDayKey);
 
     if (!userState.goalPerDay) {
       writeDb(db);
@@ -614,7 +739,9 @@ bot.on("message", (msg) => {
   if (text === BUTTONS.left) {
     const db = readDb();
     const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
-    rollDailyStateIfNeeded(userState, nowDateInTimezone());
+    const now = nowDateInTimezone();
+    const { activeDayKey } = ensureGlobalDayState(db, now);
+    syncUserToActiveDay(userState, activeDayKey);
     writeDb(db);
 
     if (!userState.goalPerDay) {
@@ -633,7 +760,9 @@ bot.on("message", (msg) => {
   if (text === BUTTONS.record) {
     const db = readDb();
     const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
-    rollDailyStateIfNeeded(userState, nowDateInTimezone());
+    const now = nowDateInTimezone();
+    const { activeDayKey } = ensureGlobalDayState(db, now);
+    syncUserToActiveDay(userState, activeDayKey);
     writeDb(db);
 
     bot.sendMessage(
@@ -647,7 +776,9 @@ bot.on("message", (msg) => {
   if (text === BUTTONS.allFrom) {
     const db = readDb();
     const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
-    rollDailyStateIfNeeded(userState, nowDateInTimezone());
+    const now = nowDateInTimezone();
+    const { activeDayKey } = ensureGlobalDayState(db, now);
+    syncUserToActiveDay(userState, activeDayKey);
     writeDb(db);
 
     if (!userState.goalPerDay) {
@@ -678,9 +809,17 @@ bot.on("message", (msg) => {
 
     const db = readDb();
     const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
-    rollDailyStateIfNeeded(userState, nowDateInTimezone());
+    const now = nowDateInTimezone();
+    const { activeDayKey } = ensureGlobalDayState(db, now);
+    syncUserToActiveDay(userState, activeDayKey);
+    if (!userState.goalPerDay) {
+      pendingAdd.delete(userId);
+      writeDb(db);
+      bot.sendMessage(msg.chat.id, "Сначала задай цель через /start 100", getReplyKeyboard());
+      return;
+    }
 
-    const dateKey = getDatePartsInTimezone(nowDateInTimezone()).dateKey;
+    const dateKey = activeDayKey;
     userState.dailyDone[dateKey] = Number(userState.dailyDone[dateKey] || 0) + value;
     userState.totalDone += value;
     userState.remainingToday = Math.max(0, Number(userState.remainingToday || 0) - value);
@@ -708,8 +847,16 @@ bot.on("message", (msg) => {
 
     const db = readDb();
     const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
-    rollDailyStateIfNeeded(userState, nowDateInTimezone());
-    const dateKey = getDatePartsInTimezone(nowDateInTimezone()).dateKey;
+    const now = nowDateInTimezone();
+    const { activeDayKey } = ensureGlobalDayState(db, now);
+    syncUserToActiveDay(userState, activeDayKey);
+    if (!userState.goalPerDay) {
+      pendingRemove.delete(userId);
+      writeDb(db);
+      bot.sendMessage(msg.chat.id, "Сначала задай цель через /start 100", getReplyKeyboard());
+      return;
+    }
+    const dateKey = activeDayKey;
     const todayDone = Number(userState.dailyDone[dateKey] || 0);
 
     if (todayDone <= 0) {
@@ -748,7 +895,9 @@ bot.on("message", (msg) => {
 
     const db = readDb();
     const userState = ensureUser(db, userId, msg.from.first_name || "Пользователь");
-    rollDailyStateIfNeeded(userState, nowDateInTimezone());
+    const now = nowDateInTimezone();
+    const { activeDayKey } = ensureGlobalDayState(db, now);
+    syncUserToActiveDay(userState, activeDayKey);
 
     let sum = 0;
     if (normalized.type === "beginning") {
@@ -791,18 +940,11 @@ function processDailyRollAndReminders() {
   lastTickKey = tickKey;
 
   const db = readDb();
-  let changed = false;
+  const { activeDayKey, usersChanged } = ensureGlobalDayState(db, now);
+  let changed = usersChanged;
 
   for (const [userId, userState] of Object.entries(db.users)) {
-    const previousDate = userState.currentDateKey;
-    const previousRemaining = userState.remainingToday;
-
-    rollDailyStateIfNeeded(userState, now);
-
-    if (
-      previousDate !== userState.currentDateKey ||
-      previousRemaining !== userState.remainingToday
-    ) {
+    if (syncUserToActiveDay(userState, activeDayKey)) {
       changed = true;
     }
 
@@ -844,6 +986,12 @@ function processDailyRollAndReminders() {
 }
 
 setInterval(processDailyRollAndReminders, 30 * 1000);
+if (FORCE_NEW_DAY_ON_START) {
+  const db = readDb();
+  forceNewDayReset(db, nowDateInTimezone(), NEW_DAY_DEFAULT_GOAL);
+  writeDb(db);
+  console.log(`Forced new day applied. Base goal: ${NEW_DAY_DEFAULT_GOAL}`);
+}
 processDailyRollAndReminders();
 
 console.log("Push-up bot is running...");
