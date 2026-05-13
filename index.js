@@ -19,6 +19,13 @@ const RESET_HOUR = 4;
 const NEW_DAY_DEFAULT_GOAL = Number(process.env.NEW_DAY_DEFAULT_GOAL || 100);
 const FORCE_NEW_DAY_ON_START = process.argv.includes("--newday");
 const CLEAR_LEADERBOARD_ON_START = process.argv.includes("--clearleader");
+const DUMP_DATA_ALLOWED_IDS = new Set(
+  String(process.env.DUMP_DATA_ALLOWED_IDS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
+const TELEGRAM_MESSAGE_MAX = 4096;
 const BUTTONS = {
   add: "/add",
   remove: "/remove",
@@ -307,6 +314,24 @@ function clearLeaderboardAndRecords(db) {
     userState.dailyDone = {};
     userState.totalDone = 0;
   }
+}
+
+function canUseDumpDataCommand(msg) {
+  if (!msg.from) {
+    return false;
+  }
+  const uid = String(msg.from.id);
+  if (DUMP_DATA_ALLOWED_IDS.size > 0) {
+    return DUMP_DATA_ALLOWED_IDS.has(uid);
+  }
+  return msg.chat.type === "private";
+}
+
+function buildFullDataDumpObject() {
+  return {
+    database: readDb(),
+    dayState: readDayState(),
+  };
 }
 
 function getReplyKeyboard() {
@@ -799,6 +824,38 @@ bot.onText(/\/allfrom(?:@\w+)?/, (msg) => {
 
 bot.onText(/\/leaderboard(?:@\w+)?/, (msg) => {
   replyTotalLeaderboard(msg);
+});
+
+bot.onText(/\/dumpdata(?:@\w+)?/, (msg) => {
+  if (!canUseDumpDataCommand(msg)) {
+    bot.sendMessage(
+      msg.chat.id,
+      "Команда недоступна. Напиши боту в личку или добавь свой Telegram id в DUMP_DATA_ALLOWED_IDS в настройках бота.",
+      getReplyKeyboard()
+    );
+    return;
+  }
+
+  const payload = buildFullDataDumpObject();
+  const json = JSON.stringify(payload, null, 2);
+
+  if (json.length <= TELEGRAM_MESSAGE_MAX) {
+    bot.sendMessage(msg.chat.id, json, getReplyKeyboard()).catch(() => {
+      const buf = Buffer.from(json, "utf-8");
+      bot
+        .sendDocument(msg.chat.id, buf, { ...getReplyKeyboard() }, { filename: "pubot-dump.json" })
+        .catch(() => null);
+    });
+    return;
+  }
+
+  const buf = Buffer.from(json, "utf-8");
+  bot.sendMessage(
+    msg.chat.id,
+    "JSON слишком длинный для одного сообщения — отправляю файлом.",
+    getReplyKeyboard()
+  );
+  bot.sendDocument(msg.chat.id, buf, { ...getReplyKeyboard() }, { filename: "pubot-dump.json" }).catch(() => null);
 });
 
 bot.on("message", (msg) => {
