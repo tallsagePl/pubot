@@ -1,0 +1,94 @@
+{
+  "database": {
+    "users": {
+      "459928328": {
+        "profile": { "name": "Arseniy Polyubin" },
+        "goalPerDay": 100,
+        "carryOver": 90,
+        "remainingToday": 165,
+        "currentDateKey": "2026-05-13",
+        "bestDay": 160,
+        "dailyDone": {
+          "2026-05-08": 50,
+          "2026-05-09": 30,
+          "2026-05-10": 160,
+          "2026-05-11": 40,
+          "2026-05-12": 130,
+          "2026-05-13": 25
+        },
+        "totalDone": 435,
+        "statsInitializedAt": 1778247617981
+      },
+      "474319147": {
+        "profile": { "name": "tallsage" },
+        "goalPerDay": 100,
+        "carryOver": 0,
+        "remainingToday": 100,
+        "currentDateKey": "2026-05-13",
+        "bestDay": 132,
+        "dailyDone": {
+          "2026-05-05": 105,
+          "2026-05-06": 130,
+          "2026-05-07": 100,
+          "2026-05-08": 100,
+          "2026-05-09": 58,
+          "2026-05-10": 132,
+          "2026-05-11": 110,
+          "2026-05-12": 100
+        },
+        "totalDone": 835,
+        "statsInitializedAt": 1777908690295
+      },
+      "745243166": {
+        "profile": { "name": "Mthu042" },
+        "goalPerDay": 100,
+        "carryOver": 188,
+        "remainingToday": 288,
+        "currentDateKey": "2026-05-13",
+        "bestDay": 139,
+        "dailyDone": {
+          "2026-05-05": 86,
+          "2026-05-06": 139,
+          "2026-05-07": 100,
+          "2026-05-08": 60,
+          "2026-05-09": 32,
+          "2026-05-10": 95,
+          "2026-05-11": 30,
+          "2026-05-12": 95
+        },
+        "totalDone": 637,
+        "statsInitializedAt": 1777930716390
+      },
+      "1336691335": {
+        "profile": { "name": "Denis" },
+        "goalPerDay": 100,
+        "carryOver": 0,
+        "remainingToday": 100,
+        "currentDateKey": "2026-05-13",
+        "bestDay": 124,
+        "dailyDone": {
+          "2026-05-05": 100,
+          "2026-05-06": 124,
+          "2026-05-07": 115,
+          "2026-05-08": 100,
+          "2026-05-09": 113,
+          "2026-05-10": 105,
+          "2026-05-11": 102,
+          "2026-05-12": 102
+        },
+        "totalDone": 861,
+        "statsInitializedAt": 1777931804976
+      }
+    },
+    "chats": {
+      "-1003536513127": {
+        "userIds": ["474319147", "745243166", "1336691335", "459928328"],
+        "groupBestDayRecord": { "value": 160, "ownerId": "459928328" }
+      }
+    }
+  },
+  "dayState": {
+    "activeDayKey": "2026-05-13",
+    "updatedAt": 1778634009861
+  }
+}

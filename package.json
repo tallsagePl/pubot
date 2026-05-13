@@ -7,12 +7,16 @@
     "start": "node index.js",
     "newday": "node index.js --newday",
     "clearleader": "node index.js --clearleader",
-    "test": "echo \"No tests configured\""
+    "test": "echo \"No tests configured\"",
+    "db:migrate": "node scripts/migrate-legacy-export-to-sqlite.js",
+    "db:migrate:sample": "node scripts/migrate-legacy-export-to-sqlite.js scripts/fixtures/legacy-export-sample.json",
+    "db:migrate:bd": "node scripts/migrate-legacy-export-to-sqlite.js bd.json"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "better-sqlite3": "^11.10.0",
     "dotenv": "^17.4.2",
     "node-telegram-bot-api": "^0.67.0"
   }
