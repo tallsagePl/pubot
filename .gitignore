@@ -4,4 +4,3 @@ data/users.json
 data/pubot.db
 data/pubot.db-shm
 data/pubot.db-wal
-bd.json
