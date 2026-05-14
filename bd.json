@@ -8,7 +8,7 @@
         "goalPerDay": 100,
         "carryOver": 90,
         "remainingToday": 165,
-        "currentDateKey": "2026-05-13",
+        "currentDateKey": "2026-05-14",
         "bestDay": 160,
         "dailyDone": {
           "2026-05-08": 50,
@@ -18,7 +18,7 @@
           "2026-05-12": 130,
           "2026-05-13": 50
         },
-        "totalDone": 435,
+        "totalDone": 460,
         "statsInitializedAt": 1778247617981
       },
       "474319147": {
@@ -28,7 +28,7 @@
         "goalPerDay": 100,
         "carryOver": 0,
         "remainingToday": 100,
-        "currentDateKey": "2026-05-13",
+        "currentDateKey": "2026-05-14",
         "bestDay": 132,
         "dailyDone": {
           "2026-05-05": 105,
@@ -41,7 +41,7 @@
           "2026-05-12": 100,
           "2026-05-13": 100
         },
-        "totalDone": 835,
+        "totalDone": 935,
         "statsInitializedAt": 1777908690295
       },
       "745243166": {
@@ -51,7 +51,7 @@
         "goalPerDay": 100,
         "carryOver": 188,
         "remainingToday": 288,
-        "currentDateKey": "2026-05-13",
+        "currentDateKey": "2026-05-14",
         "bestDay": 139,
         "dailyDone": {
           "2026-05-05": 86,
@@ -74,7 +74,7 @@
         "goalPerDay": 100,
         "carryOver": 0,
         "remainingToday": 100,
-        "currentDateKey": "2026-05-13",
+        "currentDateKey": "2026-05-14",
         "bestDay": 124,
         "dailyDone": {
           "2026-05-05": 100,
@@ -87,7 +87,7 @@
           "2026-05-12": 102,
           "2026-05-13": 50
         },
-        "totalDone": 861,
+        "totalDone": 911,
         "statsInitializedAt": 1777931804976
       }
     },
@@ -107,7 +107,7 @@
     }
   },
   "dayState": {
-    "activeDayKey": "2026-05-13",
+    "activeDayKey": "2026-05-14",
     "updatedAt": 1778634009861
   }
 }
