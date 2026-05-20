@@ -10,7 +10,8 @@
     "test": "echo \"No tests configured\"",
     "db:migrate": "node scripts/migrate-legacy-export-to-sqlite.js",
     "db:migrate:sample": "node scripts/migrate-legacy-export-to-sqlite.js scripts/fixtures/legacy-export-sample.json",
-    "db:migrate:bd": "node scripts/migrate-legacy-export-to-sqlite.js bd.json"
+    "db:migrate:bd": "node scripts/migrate-legacy-export-to-sqlite.js bd.json",
+    "db:reset": "node scripts/reset-database.js"
   },
   "keywords": [],
   "author": "",
